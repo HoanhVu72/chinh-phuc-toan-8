@@ -1,5 +1,7 @@
 <!DOCTYPE html>
 <html lang="vi" class="h-full">
+<script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,6 +14,47 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <script>
+        // Hàm ĐẨY dữ liệu từ máy lên Đám mây Firebase
+        function pushDataToFirebase() {
+            const u = currentUser();
+            if (!u) return;
+
+            // 1. Đồng bộ dữ liệu chung của cả lớp (Tài khoản, kết quả tổng, câu hỏi/chủ đề cô giáo thêm)
+            db.ref('class_data/users').set(getUsers());
+            db.ref('class_data/custom_chapters').set(lsGet(LS_CUSTOM_CH, []));
+            db.ref('class_data/custom_questions').set(lsGet(LS_CUSTOM_Q, {}));
+            db.ref('class_data/all_results').set(lsGet(LS_RESULTS, []));
+
+            // 2. Đồng bộ dữ liệu học tập cá nhân của học sinh đang đăng nhập (Điểm số, huy chương)
+            db.ref('student_data/' + u.username + '/scores').set(lsGet(scoresKey(), {}));
+            db.ref('student_data/' + u.username + '/achievements').set(lsGet(achKey(), {}));
+        }
+
+        // Hàm TẢI dữ liệu từ Đám mây Firebase về máy
+        async function pullDataFromFirebase(username) {
+            try {
+                // 1. Tải dữ liệu dùng chung của lớp
+                const classSnapshot = await db.ref('class_data').once('value');
+                const classData = classSnapshot.val() || {};
+                
+                if (classData.users) setUsers(classData.users);
+                if (classData.custom_chapters) lsSet(LS_CUSTOM_CH, classData.custom_chapters);
+                if (classData.custom_questions) lsSet(LS_CUSTOM_Q, classData.custom_questions);
+                if (classData.all_results) lsSet(LS_RESULTS, classData.all_results);
+
+                // 2. Tải dữ liệu cá nhân của tài khoản đăng nhập
+                if (username) {
+                    const studentSnapshot = await db.ref('student_data/' + username).once('value');
+                    const studentData = studentSnapshot.val() || {};
+                    
+                    localStorage.setItem('math8_scores_' + username, JSON.stringify(studentData.scores || {}));
+                    localStorage.setItem('math8_achievements_' + username, JSON.stringify(studentData.achievements || {}));
+                }
+            } catch (e) {
+                console.error("Lỗi đồng bộ dữ liệu đám mây:", e);
+            }
+        }
+
         tailwind.config = {
             darkMode: 'class',
             theme: {
@@ -715,6 +758,20 @@
     </div>
 
     <script>
+        // 1. Cấu hình Firebase (Lấy chính xác từ ảnh chụp của bạn)
+        const firebaseConfig = {
+          apiKey: "AIzaSyCZfcmmGRxnbswMa_wQEmPtCylfHIiRinc",
+          authDomain: "toan8-game.firebaseapp.com",
+          databaseURL: "https://toan8-game-default-rtdb.asia-southeast1.firebasedatabase.app",
+          projectId: "toan8-game",
+          storageBucket: "toan8-game.firebasestorage.app",
+          messagingSenderId: "174421901990",
+          appId: "1:174421901990:web:0264bb6da69befaf9eea67"
+        };
+
+        // 2. Khởi tạo Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
         const CHAPTERS_LIST = [
             { id: 1, code: "Chương I", name: "Đa thức", icon: "fa-calculator", desc: "Đơn thức, đa thức nhiều biến, các phép toán cộng trừ nhân chia đa thức." },
             { id: 2, code: "Chương II", name: "Hằng đẳng thức đáng nhớ và ứng dụng", icon: "fa-superscript", desc: "7 hằng đẳng thức cốt lõi và các phương pháp phân tích đa thức thành nhân tử." },
@@ -1565,6 +1622,7 @@
             }
             lsSet(LS_SESSION, { username: uname, role: acc.role, fullName: acc.fullName, className: acc.className || '' });
             document.getElementById('login-password').value = '';
+            await pullDataFromFirebase(uname); // Chờ kéo dữ liệu của tài khoản này về máy rồi mới vào app
             enterApp();
         }
 
@@ -1766,6 +1824,8 @@
             ['adm-new-username', 'adm-new-password', 'adm-new-fullname', 'adm-new-class'].forEach(id => document.getElementById(id).value = '');
             renderAdminAccounts();
             showCustomAlert('Thành công 🎉', 'Đã tạo tài khoản "' + uname + '". Hãy gửi tên đăng nhập, mật khẩu (và Mã lớp học nếu học sinh dùng máy riêng) cho học sinh.');
+
+            pushDataToFirebase();
         }
 
         function renderAdminAccounts() {
@@ -1818,6 +1878,8 @@
                 localStorage.removeItem('math8_achievements_' + uname);
                 renderAdminAccounts();
             });
+
+            pushDataToFirebase();
         }
 
         /* ---------- TAB CHỦ ĐỀ ---------- */
@@ -1837,6 +1899,7 @@
             renderAdminTopics();
             renderChapters();
             showCustomAlert('Thành công 🎉', 'Đã thêm chủ đề "' + name + '". Hãy sang thẻ Câu hỏi để soạn câu hỏi cho chủ đề này.');
+            pushDataToFirebase();
         }
 
         function renderAdminTopics() {
@@ -1868,6 +1931,8 @@
                 renderAdminTopics();
                 renderChapters();
             });
+
+            pushDataToFirebase();
         }
 
         /* ---------- TAB CÂU HỎI ---------- */
@@ -1949,6 +2014,7 @@
             renderAdminQuestionTypeFields();
             renderAdminQuestions();
             showCustomAlert('Thành công 🎉', 'Đã lưu câu hỏi mới vào ' + chName + ' (Vòng ' + round + ').');
+            pushDataToFirebase();
         }
 
         function renderAdminQuestions() {
@@ -1980,6 +2046,8 @@
             lsSet(LS_CUSTOM_Q, cq);
             applyCustomContent();
             renderAdminQuestions();
+
+            pushDataToFirebase();
         }
 
         /* ---------- TAB BẢNG ĐIỂM ---------- */
@@ -2262,6 +2330,8 @@
 
             renderLeaderboard();
             checkAchievementsUpdate();
+
+            pushDataToFirebase(); // Tự động đẩy điểm số mới lên Firebase
         }
 
         function confirmResetUserData() {
@@ -3305,9 +3375,15 @@
             document.getElementById('login-password').addEventListener('keypress', function (e) {
                 if (e.key === 'Enter') handleLogin();
             });
-            if (currentUser()) {
+
+            const u = currentUser();
+            if (u) {
+                // Nếu đã đăng nhập từ trước, tự động kéo dữ liệu mới nhất của tài khoản này từ Cloud về
+                await pullDataFromFirebase(u.username);
                 enterApp();
             } else {
+                // Nếu chưa đăng nhập, vẫn kéo danh sách tài khoản chung về để nhận diện thông tin đăng nhập
+                await pullDataFromFirebase(null);
                 document.getElementById('screen-login').classList.remove('hidden');
             }
         };
