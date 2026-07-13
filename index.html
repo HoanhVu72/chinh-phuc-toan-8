@@ -15,47 +15,195 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <script>
-        // Hàm ĐẨY dữ liệu từ máy lên Đám mây Firebase
-        function pushDataToFirebase() {
-            const u = currentUser();
-            if (!u) return;
+        /* ===================== MODULE ĐỒNG BỘ FIREBASE (BẢN VÁ) ===================== */
+        const FB = { ok: false, connected: false, lastError: null, checked: false };
 
-            // 1. Đồng bộ dữ liệu chung của cả lớp (Tài khoản, kết quả tổng, câu hỏi/chủ đề cô giáo thêm)
-            db.ref('class_data/users').set(getUsers());
-            db.ref('class_data/custom_chapters').set(lsGet(LS_CUSTOM_CH, []));
-            db.ref('class_data/custom_questions').set(lsGet(LS_CUSTOM_Q, {}));
-            db.ref('class_data/all_results').set(lsGet(LS_RESULTS, []));
-
-            // 2. Đồng bộ dữ liệu học tập cá nhân của học sinh đang đăng nhập (Điểm số, huy chương)
-            db.ref('student_data/' + u.username + '/scores').set(lsGet(scoresKey(), {}));
-            db.ref('student_data/' + u.username + '/achievements').set(lsGet(achKey(), {}));
+        // Truy cập an toàn: nếu SDK chặn/lỗi mạng thì trả về null thay vì làm sập cả trang
+        function fbDb() {
+            try { return (typeof db !== 'undefined' && db) ? db : null; } catch (e) { return null; }
         }
 
-        // Hàm TẢI dữ liệu từ Đám mây Firebase về máy
-        async function pullDataFromFirebase(username) {
-            try {
-                // 1. Tải dữ liệu dùng chung của lớp
-                const classSnapshot = await db.ref('class_data').once('value');
-                const classData = classSnapshot.val() || {};
-                
-                if (classData.users) setUsers(classData.users);
-                if (classData.custom_chapters) lsSet(LS_CUSTOM_CH, classData.custom_chapters);
-                if (classData.custom_questions) lsSet(LS_CUSTOM_Q, classData.custom_questions);
-                if (classData.all_results) lsSet(LS_RESULTS, classData.all_results);
+        function fbErrText(e) {
+            const m = (e && (e.message || e.code)) ? (e.message || e.code) : String(e);
+            if (/permission_denied|Permission denied/i.test(m)) {
+                return 'PERMISSION_DENIED — Luật bảo mật (Rules) của Realtime Database đang chặn. Vào Firebase Console → Realtime Database → Rules và cho phép read/write.';
+            }
+            if (/network|offline|unavailable/i.test(m)) return 'Không có kết nối mạng tới Firebase.';
+            return m;
+        }
 
-                // 2. Tải dữ liệu cá nhân của tài khoản đăng nhập
-                if (username) {
-                    const studentSnapshot = await db.ref('student_data/' + username).once('value');
-                    const studentData = studentSnapshot.val() || {};
-                    
-                    localStorage.setItem('math8_scores_' + username, JSON.stringify(studentData.scores || {}));
-                    localStorage.setItem('math8_achievements_' + username, JSON.stringify(studentData.achievements || {}));
-                }
-            } catch (e) {
-                console.error("Lỗi đồng bộ dữ liệu đám mây:", e);
+        function renderFbBadge() {
+            const el = document.getElementById('fb-badge');
+            if (!el) return;
+            let cls, txt, icon;
+            if (FB.ok && FB.connected) { cls = 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'; txt = 'Đám mây: Đã kết nối'; icon = 'fa-cloud-arrow-up'; }
+            else if (FB.lastError) { cls = 'bg-red-100 text-red-700 border-red-300 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800'; txt = 'Đám mây: LỖI'; icon = 'fa-triangle-exclamation'; }
+            else { cls = 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'; txt = 'Đám mây: Đang kết nối...'; icon = 'fa-cloud'; }
+            el.className = 'hidden md:flex items-center gap-2 px-4 py-2 rounded-2xl border-2 font-black text-sm cursor-pointer ' + cls;
+            el.innerHTML = '<i class="fa-solid ' + icon + '"></i> ' + txt;
+            el.title = FB.lastError ? fbErrText(FB.lastError) : 'Dữ liệu đang được đồng bộ lên Firebase';
+        }
+
+        function showFbDetail() {
+            if (FB.ok && FB.connected) {
+                showCustomAlert('Đám mây hoạt động tốt ✅', 'Ứng dụng đang kết nối thành công tới Firebase. Tài khoản, câu hỏi và điểm số được lưu trên máy chủ, không mất khi xóa trình duyệt.');
+            } else {
+                showCustomAlert('Đám mây KHÔNG hoạt động ❌', 'Dữ liệu hiện chỉ lưu trên trình duyệt này.\n\nNguyên nhân: ' + (FB.lastError ? fbErrText(FB.lastError) : 'Chưa kết nối được tới máy chủ Firebase (kiểm tra mạng, hoặc SDK bị chặn).'));
             }
         }
 
+        function initFirebaseWatch() {
+            const d = fbDb();
+            if (!d) { FB.lastError = 'Không tải được Firebase SDK (mạng bị chặn hoặc cấu hình sai).'; renderFbBadge(); return; }
+            try {
+                d.ref('.info/connected').on('value', function (snap) {
+                    FB.connected = (snap.val() === true);
+                    renderFbBadge();
+                });
+            } catch (e) { FB.lastError = e; renderFbBadge(); }
+        }
+
+        /* --- TỰ KIỂM TRA: thử ghi thật một nốt nhỏ để biết Rules có cho phép không --- */
+        async function firebaseHealthCheck(showResult) {
+            const d = fbDb();
+            if (!d) {
+                FB.ok = false; FB.lastError = 'Không tải được Firebase SDK.'; renderFbBadge();
+                if (showResult) showCustomAlert('Kiểm tra thất bại ❌', fbErrText(FB.lastError));
+                return false;
+            }
+            try {
+                await d.ref('_healthcheck').set({ at: new Date().toISOString() });
+                await d.ref('_healthcheck').once('value');
+                FB.ok = true; FB.lastError = null; FB.checked = true; renderFbBadge();
+                if (showResult) showCustomAlert('Kiểm tra thành công ✅', 'Firebase ĐỌC và GHI đều hoạt động. Dữ liệu của lớp đang được lưu an toàn trên đám mây.');
+                return true;
+            } catch (e) {
+                FB.ok = false; FB.lastError = e; FB.checked = true; renderFbBadge();
+                console.error('[Firebase] Health check thất bại:', e);
+                if (showResult) showCustomAlert('Kiểm tra thất bại ❌', fbErrText(e));
+                return false;
+            }
+        }
+
+        /* --- ĐẨY dữ liệu lên đám mây ---
+           QUAN TRỌNG: chỉ tài khoản GIÁO VIÊN mới được ghi đè dữ liệu chung của lớp.
+           Học sinh chỉ ghi dữ liệu học tập của chính mình → tránh việc máy học sinh
+           ghi đè và xóa mất tài khoản/câu hỏi/điểm của cả lớp. */
+        async function pushDataToFirebase() {
+            const d = fbDb();
+            const u = currentUser();
+            if (!d || !u) return false;
+            try {
+                if (u.role === 'admin') {
+                    await d.ref('class_data').set({
+                        users: getUsers(),
+                        custom_chapters: lsGet(LS_CUSTOM_CH, []),
+                        custom_questions: lsGet(LS_CUSTOM_Q, {}),
+                        updatedAt: new Date().toISOString()
+                    });
+                }
+                await d.ref('student_data/' + u.username).set({
+                    scores: lsGet(scoresKey(), {}),
+                    achievements: lsGet(achKey(), {}),
+                    fullName: u.fullName || '',
+                    className: u.className || ''
+                });
+                FB.ok = true; FB.lastError = null; renderFbBadge();
+                return true;
+            } catch (e) {
+                FB.ok = false; FB.lastError = e; renderFbBadge();
+                console.error('[Firebase] Đẩy dữ liệu thất bại:', e);
+                if (u.role === 'admin') {
+                    showCustomAlert('Lỗi đồng bộ đám mây ❌', 'Không lưu được lên Firebase, thay đổi này CHỈ nằm trên máy hiện tại.\n\nNguyên nhân: ' + fbErrText(e));
+                }
+                return false;
+            }
+        }
+
+        /* --- Mỗi lượt làm bài được ghi thành MỘT bản ghi riêng (push), không ghi đè cả mảng --- */
+        async function pushResultRecord(record) {
+            const d = fbDb();
+            if (!d) return false;
+            try {
+                await d.ref('class_results').push(record);
+                FB.ok = true; FB.lastError = null; renderFbBadge();
+                return true;
+            } catch (e) {
+                FB.ok = false; FB.lastError = e; renderFbBadge();
+                console.error('[Firebase] Không gửi được kết quả:', e);
+                return false;
+            }
+        }
+
+        /* --- KÉO toàn bộ kết quả của lớp về (dùng cho bảng điểm Giáo viên) --- */
+        async function pullResultsFromFirebase() {
+            const d = fbDb();
+            if (!d) return false;
+            try {
+                const snap = await d.ref('class_results').once('value');
+                const obj = snap.val() || {};
+                const cloud = Object.keys(obj).map(k => obj[k]);
+                const local = lsGet(LS_RESULTS, []);
+                const merged = cloud.slice();
+                local.forEach(r => {
+                    if (!merged.some(x => x.stamp === r.stamp && x.username === r.username)) merged.push(r);
+                });
+                merged.sort((a, b) => String(a.stamp).localeCompare(String(b.stamp)));
+                lsSet(LS_RESULTS, merged);
+                FB.ok = true; FB.lastError = null; renderFbBadge();
+                return true;
+            } catch (e) {
+                FB.ok = false; FB.lastError = e; renderFbBadge();
+                console.error('[Firebase] Không tải được kết quả lớp:', e);
+                return false;
+            }
+        }
+
+        /* --- KÉO dữ liệu từ đám mây về máy --- */
+        async function pullDataFromFirebase(username) {
+            const d = fbDb();
+            if (!d) { FB.ok = false; FB.lastError = 'Không tải được Firebase SDK.'; renderFbBadge(); return false; }
+            try {
+                const snap = await d.ref('class_data').once('value');
+                if (snap.exists()) {
+                    const data = snap.val() || {};
+                    // Ghi đè hoàn toàn: đám mây là nguồn dữ liệu chuẩn.
+                    // (Bản cũ dùng "if (data.x)" nên khi cô XÓA hết câu hỏi, máy học sinh vẫn giữ câu cũ.)
+                    setUsers(data.users || {});
+                    lsSet(LS_CUSTOM_CH, data.custom_chapters || []);
+                    lsSet(LS_CUSTOM_Q, data.custom_questions || {});
+                }
+
+                await pullResultsFromFirebase();
+
+                if (username) {
+                    const s = await d.ref('student_data/' + username).once('value');
+                    const sd = s.val() || {};
+                    localStorage.setItem('math8_scores_' + username, JSON.stringify(sd.scores || {}));
+                    localStorage.setItem('math8_achievements_' + username, JSON.stringify(sd.achievements || { first_win: false, perfect_score: false, speed_runner: false }));
+                }
+
+                FB.ok = true; FB.lastError = null; renderFbBadge();
+                return true;
+            } catch (e) {
+                FB.ok = false; FB.lastError = e; renderFbBadge();
+                console.error('[Firebase] Kéo dữ liệu thất bại:', e);
+                return false;
+            }
+        }
+
+        function setLoginLoading(on, msg) {
+            const btn = document.getElementById('btn-login');
+            const note = document.getElementById('login-note');
+            if (!btn || !note) return;
+            btn.disabled = on;
+            btn.style.opacity = on ? '0.6' : '1';
+            if (on) { note.innerText = msg || 'Đang kết nối đám mây...'; note.classList.remove('hidden'); }
+            else { note.classList.add('hidden'); }
+        }
+    </script>
+
+    <script>
         tailwind.config = {
             darkMode: 'class',
             theme: {
@@ -147,9 +295,10 @@
                     <input type="password" id="login-password" autocomplete="current-password" class="w-full p-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-bold text-lg focus:border-brand-500 focus:outline-none dark:text-white" placeholder="Nhập mật khẩu...">
                 </div>
                 <p id="login-error" class="hidden text-red-600 dark:text-red-400 font-bold text-center bg-red-50 dark:bg-red-950/30 rounded-xl p-3 border-2 border-red-200 dark:border-red-900"></p>
-                <button onclick="handleLogin()" class="btn-hover-scale w-full py-4 rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 text-white font-black text-xl shadow-xl flex items-center justify-center gap-3">
+                <button id="btn-login" onclick="handleLogin()" class="btn-hover-scale w-full py-4 rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 text-white font-black text-xl shadow-xl flex items-center justify-center gap-3">
                     <i class="fa-solid fa-right-to-bracket"></i> ĐĂNG NHẬP
                 </button>
+                <p id="login-note" class="hidden text-center text-sm font-bold text-slate-500 dark:text-slate-400"><i class="fa-solid fa-spinner fa-spin"></i> Đang kết nối đám mây...</p>
             </div>
             <div class="border-t-2 border-slate-100 dark:border-slate-800 pt-4 text-center space-y-3">
                 <button onclick="toggleImportBox()" class="text-brand-600 dark:text-brand-400 font-bold hover:underline text-sm">
@@ -190,6 +339,7 @@
         </div>
 
         <div class="flex items-center gap-4">
+            <div id="fb-badge" onclick="showFbDetail()" class="hidden md:flex items-center gap-2 px-4 py-2 rounded-2xl border-2 font-black text-sm cursor-pointer bg-slate-100 text-slate-600 border-slate-300"><i class="fa-solid fa-cloud"></i> Đám mây: Đang kết nối...</div>
             <div id="user-chip" class="hidden items-center gap-3 bg-slate-100 dark:bg-slate-800 pl-4 pr-2 py-2 rounded-2xl border-2 border-slate-200 dark:border-slate-700">
                 <div class="text-right hidden sm:block">
                     <p id="user-chip-name" class="text-sm font-black text-slate-800 dark:text-slate-100 leading-tight">—</p>
@@ -527,6 +677,7 @@
                     <h3 class="text-xl font-extrabold text-amber-800 dark:text-amber-300"><i class="fa-solid fa-share-nodes"></i> Mã lớp học (gửi cho học sinh dùng máy khác)</h3>
                     <p class="text-sm font-semibold text-amber-700 dark:text-amber-400">Tài khoản chỉ tồn tại trên trình duyệt đã tạo. Nếu học sinh làm bài trên máy riêng, hãy bấm nút dưới để sao chép Mã lớp học rồi gửi cho học sinh (kèm tên đăng nhập + mật khẩu). Học sinh dán mã này một lần ở màn hình đăng nhập. Mã cũng bao gồm các chủ đề và câu hỏi cô tự thêm.</p>
                     <div class="flex flex-wrap gap-3">
+                        <button onclick="firebaseHealthCheck(true)" class="btn-hover-scale px-6 py-3 rounded-xl bg-emerald-600 text-white font-black shadow-lg"><i class="fa-solid fa-stethoscope"></i> KIỂM TRA KẾT NỐI FIREBASE</button>
                         <button onclick="exportClassCode()" class="btn-hover-scale px-6 py-3 rounded-xl bg-amber-500 text-white font-black shadow-lg"><i class="fa-solid fa-copy"></i> SAO CHÉP MÃ LỚP HỌC</button>
                         <button onclick="adminImportResults()" class="btn-hover-scale px-6 py-3 rounded-xl bg-indigo-500 text-white font-black shadow-lg"><i class="fa-solid fa-file-import"></i> NHẬP MÃ KẾT QUẢ HỌC SINH</button>
                     </div>
@@ -599,6 +750,10 @@
                     <select id="adm-grade-filter" onchange="renderAdminGrades()" class="p-3 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold dark:text-white focus:outline-none">
                         <option value="">— Tất cả học sinh —</option>
                     </select>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <button onclick="refreshGradesFromCloud()" class="btn-hover-scale px-5 py-2.5 rounded-xl bg-indigo-500 text-white font-black text-sm shadow"><i class="fa-solid fa-rotate"></i> TẢI LẠI TỪ ĐÁM MÂY</button>
+                    <span id="adm-grade-cloud-note" class="text-sm font-bold text-slate-500 dark:text-slate-400"></span>
                 </div>
                 <div id="adm-grade-summary" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
                 <div class="overflow-x-auto rounded-2xl border-2 border-slate-100 dark:border-slate-800">
@@ -770,9 +925,15 @@
           appId: "1:174421901990:web:0264bb6da69befaf9eea67"
         };
 
-        // 2. Khởi tạo Firebase
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.database();
+        // 2. Khởi tạo Firebase — bọc try/catch để nếu mạng trường chặn gstatic.com
+        //    thì trang vẫn chạy được ở chế độ ngoại tuyến thay vì trắng màn hình.
+        let db = null;
+        try {
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.database();
+        } catch (e) {
+            console.error('[Firebase] Khởi tạo thất bại:', e);
+        }
         const CHAPTERS_LIST = [
             { id: 1, code: "Chương I", name: "Đa thức", icon: "fa-calculator", desc: "Đơn thức, đa thức nhiều biến, các phép toán cộng trừ nhân chia đa thức." },
             { id: 2, code: "Chương II", name: "Hằng đẳng thức đáng nhớ và ứng dụng", icon: "fa-superscript", desc: "7 hằng đẳng thức cốt lõi và các phương pháp phân tích đa thức thành nhân tử." },
@@ -1589,17 +1750,34 @@
         function achKey() { const u = currentUser(); return 'math8_achievements_' + (u ? u.username : 'khach'); }
 
         // Tạo sẵn tài khoản Giáo viên nếu chưa có
-        async function seedAdminAccount() {
+        // Chỉ tạo tài khoản Giáo viên mặc định khi đám mây thật sự CHƯA có tài khoản nào.
+        // (Bản cũ tạo admin/admin@123 trên MỌI máy trống — học sinh có thể đăng nhập
+        //  bằng mật khẩu mặc định để vào khu quản trị.)
+        async function seedAdminAccount(cloudReachable) {
             const users = getUsers();
-            if (!Object.values(users).some(u => u.role === 'admin')) {
-                users['admin'] = {
-                    pass: await hashPass('admin@123'),
-                    role: 'admin',
-                    fullName: 'Giáo viên',
-                    className: '',
-                    createdAt: new Date().toISOString()
-                };
-                setUsers(users);
+            if (Object.values(users).some(u => u.role === 'admin')) return;
+            if (cloudReachable && Object.keys(users).length > 0) return; // đám mây có dữ liệu rồi
+
+            users['admin'] = {
+                pass: await hashPass('admin@123'),
+                role: 'admin',
+                fullName: 'Giáo viên',
+                className: '',
+                createdAt: new Date().toISOString()
+            };
+            setUsers(users);
+
+            // Đưa tài khoản Giáo viên đầu tiên lên đám mây ngay
+            const d = fbDb();
+            if (cloudReachable && d) {
+                try {
+                    await d.ref('class_data').set({
+                        users: users,
+                        custom_chapters: lsGet(LS_CUSTOM_CH, []),
+                        custom_questions: lsGet(LS_CUSTOM_Q, {}),
+                        updatedAt: new Date().toISOString()
+                    });
+                } catch (e) { console.error('[Firebase] Không tạo được dữ liệu lớp ban đầu:', e); }
             }
         }
 
@@ -1614,16 +1792,27 @@
                 errEl.classList.remove('hidden');
                 return;
             }
+            // Làm mới danh sách tài khoản từ đám mây TRƯỚC khi kiểm tra mật khẩu,
+            // để tài khoản cô vừa tạo / mật khẩu cô vừa đổi có hiệu lực ngay lập tức.
+            setLoginLoading(true, 'Đang kiểm tra tài khoản trên đám mây...');
+            await pullDataFromFirebase(null);
+            setLoginLoading(false);
+
             const users = getUsers();
             const acc = users[uname];
             if (!acc || acc.pass !== await hashPass(pass)) {
-                errEl.innerText = 'Sai tên đăng nhập hoặc mật khẩu. Nếu bạn dùng máy mới, hãy nhập Mã lớp học trước.';
+                errEl.innerText = FB.ok
+                    ? 'Sai tên đăng nhập hoặc mật khẩu. Hãy kiểm tra lại thông tin cô giáo đã cấp.'
+                    : 'Sai thông tin, HOẶC máy chưa kết nối được đám mây. Kiểm tra mạng rồi thử lại.';
                 errEl.classList.remove('hidden');
                 return;
             }
             lsSet(LS_SESSION, { username: uname, role: acc.role, fullName: acc.fullName, className: acc.className || '' });
             document.getElementById('login-password').value = '';
-            await pullDataFromFirebase(uname); // Chờ kéo dữ liệu của tài khoản này về máy rồi mới vào app
+
+            setLoginLoading(true, 'Đang tải dữ liệu học tập của bạn...');
+            await pullDataFromFirebase(uname);
+            setLoginLoading(false);
             enterApp();
         }
 
@@ -1802,7 +1991,7 @@
             if (tab === 'accounts') renderAdminAccounts();
             if (tab === 'topics') renderAdminTopics();
             if (tab === 'questions') { populateAdminChapterSelect(); renderAdminQuestionTypeFields(); renderAdminQuestions(); }
-            if (tab === 'grades') renderAdminGrades();
+            if (tab === 'grades') { renderAdminGrades(); refreshGradesFromCloud(); }
         }
 
         /* ---------- TAB TÀI KHOẢN ---------- */
@@ -1866,7 +2055,8 @@
             if (!users[uname]) return;
             users[uname].pass = await hashPass(np.trim());
             setUsers(users);
-            showCustomAlert('Thành công 🎉', 'Đã đổi mật khẩu cho "' + uname + '". Nếu học sinh dùng máy riêng, hãy gửi lại Mã lớp học mới.');
+            await pushDataToFirebase(); // BẢN CŨ QUÊN DÒNG NÀY -> đổi mật khẩu không có hiệu lực trên máy học sinh
+            showCustomAlert('Thành công 🎉', 'Đã đổi mật khẩu cho "' + uname + '". Học sinh có thể đăng nhập bằng mật khẩu mới ngay trên máy của em.');
         }
 
         function adminDeleteAccount(uname) {
@@ -2052,6 +2242,17 @@
         }
 
         /* ---------- TAB BẢNG ĐIỂM ---------- */
+        async function refreshGradesFromCloud() {
+            const ok = await pullResultsFromFirebase();
+            renderAdminGrades();
+            const note = document.getElementById('adm-grade-cloud-note');
+            if (note) {
+                note.innerHTML = ok
+                    ? '<i class="fa-solid fa-circle-check text-emerald-500"></i> Đã tải kết quả mới nhất của cả lớp lúc ' + new Date().toLocaleTimeString('vi-VN')
+                    : '<i class="fa-solid fa-triangle-exclamation text-red-500"></i> KHÔNG tải được từ đám mây: ' + fbErrText(FB.lastError);
+            }
+        }
+
         function renderAdminGrades() {
             const results = lsGet(LS_RESULTS, []);
             const users = getUsers();
@@ -2313,7 +2514,7 @@
             // Ghi nhận LƯỢT LÀM BÀI của tài khoản hiện tại (phục vụ Bảng điểm Giáo viên và đếm số lần làm bài)
             const u = currentUser();
             const ch = CHAPTERS_LIST.find(c => c.id === chapterId);
-            appendResultRecord({
+            const record = {
                 stamp: Date.now() + '_' + Math.floor(Math.random() * 100000),
                 username: u ? u.username : 'khach',
                 fullName: u ? u.fullName : 'Khách',
@@ -2327,12 +2528,14 @@
                 total: correct + wrong,
                 timeSpent: timeSpent,
                 dateTime: new Date().toLocaleString('vi-VN')
-            });
+            };
+            appendResultRecord(record);
 
             renderLeaderboard();
             checkAchievementsUpdate();
 
-            pushDataToFirebase(); // Tự động đẩy điểm số mới lên Firebase
+            pushDataToFirebase();     // điểm & huy hiệu cá nhân của học sinh
+            pushResultRecord(record); // lượt làm bài -> bảng điểm Giáo viên (dùng push, KHÔNG ghi đè cả mảng)
         }
 
         function confirmResetUserData() {
@@ -3371,20 +3574,32 @@
         }
 
         window.onload = async function() {
-            await seedAdminAccount();
-            initLocalStorage();
+            initFirebaseWatch();
+            renderFbBadge();
+
             document.getElementById('login-password').addEventListener('keypress', function (e) {
                 if (e.key === 'Enter') handleLogin();
             });
 
+            // 1) Kéo dữ liệu chung của lớp về TRƯỚC (để máy mới cũng đăng nhập được)
+            setLoginLoading(true, 'Đang kết nối đám mây...');
+            const cloudOk = await pullDataFromFirebase(null);
+
+            // 2) Chỉ tạo tài khoản Giáo viên mặc định nếu đám mây chưa có ai
+            await seedAdminAccount(cloudOk);
+            setLoginLoading(false);
+
+            if (!cloudOk) {
+                console.warn('[Firebase] Không kết nối được -> chạy ở chế độ NGOẠI TUYẾN (chỉ lưu trên trình duyệt này).');
+            }
+
+            initLocalStorage();
+
             const u = currentUser();
             if (u) {
-                // Nếu đã đăng nhập từ trước, tự động kéo dữ liệu mới nhất của tài khoản này từ Cloud về
                 await pullDataFromFirebase(u.username);
                 enterApp();
             } else {
-                // Nếu chưa đăng nhập, vẫn kéo danh sách tài khoản chung về để nhận diện thông tin đăng nhập
-                await pullDataFromFirebase(null);
                 document.getElementById('screen-login').classList.remove('hidden');
             }
         };
