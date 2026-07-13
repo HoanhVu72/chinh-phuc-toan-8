@@ -150,6 +150,28 @@
             }
         }
 
+        /* --- XÓA sạch dữ liệu của một tài khoản trên đám mây (điểm cá nhân + các lượt làm bài) --- */
+        async function purgeUserFromCloud(uname, alsoResults) {
+            const d = fbDb();
+            if (!d) return false;
+            try {
+                await d.ref('student_data/' + uname).remove();
+                if (alsoResults) {
+                    const snap = await d.ref('class_results').once('value');
+                    const obj = snap.val() || {};
+                    const updates = {};
+                    Object.keys(obj).forEach(k => {
+                        if (obj[k] && obj[k].username === uname) updates[k] = null;
+                    });
+                    if (Object.keys(updates).length > 0) await d.ref('class_results').update(updates);
+                }
+                return true;
+            } catch (e) {
+                console.error('[Firebase] Không xóa được dữ liệu của ' + uname + ':', e);
+                return false;
+            }
+        }
+
         /* --- KÉO toàn bộ kết quả của lớp về (dùng cho bảng điểm Giáo viên) --- */
         async function pullResultsFromFirebase() {
             const d = fbDb();
@@ -1744,8 +1766,13 @@
         function b64Decode(str) { return decodeURIComponent(escape(atob(str.trim()))); }
 
         // Băm mật khẩu (SHA-256 nếu trình duyệt hỗ trợ, có phương án dự phòng)
+        let WEAK_HASH_WARNED = false;
         async function hashPass(p) {
             const raw = 'math8::' + p;
+            if (!(window.crypto && crypto.subtle) && !WEAK_HASH_WARNED) {
+                WEAK_HASH_WARNED = true;
+                console.warn('[Bảo mật] Trình duyệt không cho dùng SHA-256 (thường do mở bằng http:// thay vì https://). Mật khẩu đang dùng cách mã hóa yếu hơn và CÓ THỂ KHÔNG KHỚP với mật khẩu tạo trên https. Hãy luôn truy cập qua https://');
+            }
             try {
                 if (window.crypto && crypto.subtle) {
                     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
@@ -1949,8 +1976,12 @@
                     if (!results.some(x => x.stamp === r.stamp && x.username === r.username)) { results.push(r); added++; }
                 });
                 lsSet(LS_RESULTS, results);
+
+                // Đẩy các bản ghi vừa nhập lên đám mây, nếu không mở ở máy khác sẽ mất
+                payload.records.forEach(r => pushResultRecord(r));
+
                 renderAdminGrades();
-                showCustomAlert('Thành công 🎉', 'Đã nhập ' + added + ' kết quả mới vào bảng điểm.');
+                showCustomAlert('Thành công 🎉', 'Đã nhập ' + added + ' kết quả mới vào bảng điểm và đồng bộ lên đám mây.');
             } catch (e) {
                 showCustomAlert('Lỗi', 'Mã kết quả không hợp lệ. Hãy yêu cầu học sinh sao chép lại đầy đủ.');
             }
@@ -2005,7 +2036,7 @@
                     btn.className = 'admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300';
                 }
             });
-            if (tab === 'accounts') renderAdminAccounts();
+            if (tab === 'accounts') { renderAdminAccounts(); pullResultsFromFirebase().then(renderAdminAccounts); }
             if (tab === 'topics') renderAdminTopics();
             if (tab === 'questions') { populateAdminChapterSelect(); renderAdminQuestionTypeFields(); renderAdminQuestions(); }
             if (tab === 'grades') { renderAdminGrades(); refreshGradesFromCloud(); }
@@ -2078,16 +2109,25 @@
 
         function adminDeleteAccount(uname) {
             if (!isAdmin()) return;
-            showCustomConfirm('Xóa tài khoản?', 'Bạn có chắc muốn xóa tài khoản "' + uname + '"? Điểm số cá nhân của tài khoản này trên máy cũng sẽ bị xóa.', function () {
+            showCustomConfirm('Xóa tài khoản?', 'Bạn có chắc muốn xóa tài khoản "' + uname + '"? Toàn bộ điểm số và lịch sử làm bài của tài khoản này cũng sẽ bị xóa khỏi đám mây.', async function () {
                 const users = getUsers();
                 delete users[uname];
                 setUsers(users);
                 localStorage.removeItem('math8_scores_' + uname);
                 localStorage.removeItem('math8_achievements_' + uname);
-                renderAdminAccounts();
-            });
 
-            pushDataToFirebase();
+                // Xóa luôn các lượt làm bài của tài khoản này trong bộ nhớ máy
+                lsSet(LS_RESULTS, lsGet(LS_RESULTS, []).filter(r => r.username !== uname));
+
+                // LỖI CŨ: pushDataToFirebase() nằm NGOÀI hộp thoại nên chạy trước khi xóa
+                // -> đám mây vẫn giữ tài khoản cũ và khôi phục lại sau mỗi lần tải trang.
+                await pushDataToFirebase();
+                await purgeUserFromCloud(uname, true);
+
+                renderAdminAccounts();
+                renderAdminGrades();
+                showCustomAlert('Đã xóa 🗑️', 'Tài khoản "' + uname + '" đã được xóa khỏi máy và khỏi đám mây.');
+            });
         }
 
         /* ---------- TAB CHỦ ĐỀ ---------- */
@@ -2130,17 +2170,18 @@
 
         function adminDeleteTopic(id) {
             if (!isAdmin()) return;
-            showCustomConfirm('Xóa chủ đề?', 'Toàn bộ câu hỏi thuộc chủ đề này cũng sẽ bị xóa. Bạn có chắc chắn không?', function () {
+            showCustomConfirm('Xóa chủ đề?', 'Toàn bộ câu hỏi thuộc chủ đề này cũng sẽ bị xóa. Bạn có chắc chắn không?', async function () {
                 lsSet(LS_CUSTOM_CH, lsGet(LS_CUSTOM_CH, []).filter(c => c.id !== id));
                 const cq = lsGet(LS_CUSTOM_Q, {});
                 delete cq[id];
                 lsSet(LS_CUSTOM_Q, cq);
                 applyCustomContent();
+
+                await pushDataToFirebase(); // phải đẩy SAU khi xóa, không phải trước
+
                 renderAdminTopics();
                 renderChapters();
             });
-
-            pushDataToFirebase();
         }
 
         /* ---------- TAB CÂU HỎI ---------- */
@@ -2348,7 +2389,9 @@
             shuffledOptions: [],
             userSelectedAnswer: null,
             userArrangedOrder: [], 
-            userDragDropPairs: {},  
+            userDragDropPairs: {},
+            continuingSession: false,
+            sessionRounds: [],
             seenQuestionIds: JSON.parse(sessionStorage.getItem('math8_seen_questions')) || [],
             
             // Các thuộc tính tích lũy tổng kết cả 3 vòng chơi của một lần ôn tập
@@ -2570,10 +2613,15 @@
                     }
                     initLocalStorage();
                     gameState.seenQuestionIds = [];
+
+                    // Xóa cả trên đám mây, nếu không lần đăng nhập sau dữ liệu cũ sẽ quay lại
+                    const uu = currentUser();
+                    if (uu) purgeUserFromCloud(uu.username, true);
+
                     renderChapters();
                     renderLeaderboard();
                     hideModal('modal-leaderboard');
-                    showCustomAlert("Hoàn thành", "Đã xóa dữ liệu học tập của tài khoản này thành công!");
+                    showCustomAlert("Hoàn thành", "Đã xóa dữ liệu học tập của tài khoản này (cả trên máy và trên đám mây)!");
                 }
             );
         }
@@ -2719,16 +2767,21 @@
             const chId = gameState.currentChapterId;
             const roundNum = gameState.currentRound;
 
-            let targetCount = 12;
-            if (roundNum === 1) {
-                gameState.currentTimeLeft = 480; // 8 phút
-                targetCount = 12;
-                
-                // BẮT ĐẦU VÒNG 1: Reset lại toàn bộ hệ thống tích lũy session mới
+            // Chỉ giữ điểm tích lũy khi học sinh đi TIẾP từ vòng trước (nút "Đi tới Vòng N").
+            // Mọi lần vào chơi mới đều bắt đầu một phiên tính điểm sạch.
+            if (!gameState.continuingSession) {
                 gameState.sessionScore = 0;
                 gameState.sessionCorrect = 0;
                 gameState.sessionTotal = 0;
                 gameState.sessionTime = 0;
+                gameState.sessionRounds = [];
+            }
+            gameState.continuingSession = false;
+
+            let targetCount = 12;
+            if (roundNum === 1) {
+                gameState.currentTimeLeft = 480; // 8 phút
+                targetCount = 12;
             } else if (roundNum === 2) {
                 gameState.currentTimeLeft = 600; // 10 phút
                 targetCount = 12;
@@ -3194,7 +3247,7 @@
                 playSynthSound('correct');
                 createConfetti();
                 gameState.correctCount++;
-                earnedPoints = qPointsValue(qLevelWeight(currentQ.level));
+                earnedPoints = questionPoints(currentQ); // dùng đúng số điểm hiển thị trên câu hỏi
                 
                 if (timeElapsed < 15) { 
                     earnedPoints += 5;
@@ -3214,6 +3267,14 @@
             if (level === 'thong_hieu') return 2;
             if (level === 'van_dung' || level === 'van_dung_cao') return 3;
             return 1;
+        }
+
+        // Điểm thực nhận = đúng số điểm ghi trên câu hỏi (câu khó ăn nhiều điểm hơn)
+        function questionPoints(q) {
+            if (q && typeof q.points === 'number' && q.points > 0) return q.points;
+            if (gameState.currentRound === 1) return 10;
+            if (gameState.currentRound === 2) return 15;
+            return 20;
         }
 
         function qPointsValue(weight) {
@@ -3349,7 +3410,18 @@
                 document.getElementById('res-ratio').innerText = `${gameState.sessionCorrect}/${gameState.sessionTotal}`;
 
                 // Chỉ hiển thị Section nộp điểm Google Form khi đã hoàn thành xong Vòng 3
-                document.getElementById('cloud-submit-section').classList.remove('hidden');
+                const fbWorking = (typeof FB !== 'undefined') && FB.ok && FB.connected;
+                const csec = document.getElementById('cloud-submit-section');
+                if (fbWorking) {
+                    // Firebase đã đồng bộ tự động -> không cần gửi tay nữa
+                    csec.classList.remove('hidden');
+                    csec.innerHTML = '<h4 class="text-2xl font-black text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-2"><i class="fa-solid fa-circle-check"></i> ĐÃ GỬI ĐIỂM CHO GIÁO VIÊN</h4>' +
+                        '<p class="text-sm text-slate-600 dark:text-slate-300 font-bold max-w-lg mx-auto">Kết quả của em đã được tự động đồng bộ lên hệ thống lớp học. Em không cần làm gì thêm.</p>';
+                    const btnEx = document.getElementById('btn-export-results');
+                    if (btnEx) btnEx.parentNode.classList.add('hidden');
+                    return;
+                }
+                csec.classList.remove('hidden');
                 const uNow = currentUser();
                 if (uNow && uNow.role === 'student') {
                     document.getElementById('ipt-student-name').value = uNow.fullName || '';
@@ -3385,6 +3457,7 @@
 
         function prepareNextRound(nextRound) {
             playSynthSound('click');
+            gameState.continuingSession = true; // đi tiếp -> giữ điểm tích lũy
             gameState.currentRound = nextRound;
             document.getElementById('screen-round-result').classList.add('hidden');
             startGamePlay();
@@ -3539,7 +3612,7 @@
             const badges = [
                 { id: "first_win", name: "Người Tiên Phong", desc: "Hoàn thành xuất sắc vòng chơi đầu tiên.", icon: "fa-flag", color: "bg-blue-500" },
                 { id: "perfect_score", name: "Đại Sứ Toàn Tri", desc: "Đạt độ chính xác tuyệt đối 100% tại bất kì vòng thi nào.", icon: "fa-star", color: "bg-amber-500" },
-                { id: "speed_runner", name: "Tốc Độ Ánh Sáng", desc: "Đạt từ 150 điểm trở lên trong vòng chơi.", icon: "fa-bolt", color: "bg-indigo-500" },
+                { id: "speed_runner", name: "Cao Thủ Điểm Số", desc: "Đạt từ 150 điểm trở lên trong một vòng chơi.", icon: "fa-bolt", color: "bg-indigo-500" },
             ];
 
             badges.forEach(badge => {
@@ -3614,6 +3687,18 @@
 
             const u = currentUser();
             if (u) {
+                // Đối chiếu phiên đăng nhập với danh sách tài khoản mới nhất
+                const acc = getUsers()[u.username];
+                if (cloudOk && !acc) {
+                    localStorage.removeItem(LS_SESSION);
+                    document.getElementById('screen-login').classList.remove('hidden');
+                    showCustomAlert('Phiên đăng nhập không còn hiệu lực', 'Tài khoản này đã bị Giáo viên xóa. Vui lòng liên hệ Giáo viên để được cấp tài khoản mới.');
+                    return;
+                }
+                if (acc) {
+                    // Cập nhật lại họ tên / lớp / quyền nếu Giáo viên vừa thay đổi
+                    lsSet(LS_SESSION, { username: u.username, role: acc.role, fullName: acc.fullName, className: acc.className || '' });
+                }
                 await pullDataFromFirebase(u.username);
                 enterApp();
             } else {
