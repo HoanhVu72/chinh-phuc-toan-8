@@ -7,6 +7,7 @@
 
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Google Fonts: Quicksand & Lexend -->
@@ -114,6 +115,7 @@
                         users: getUsers(),
                         custom_chapters: lsGet(LS_CUSTOM_CH, []),
                         custom_questions: lsGet(LS_CUSTOM_Q, {}),
+                        chapter_locks: lsGet(LS_CH_LOCKS, {}),
                         updatedAt: new Date().toISOString()
                     });
                 }
@@ -209,6 +211,7 @@
                     setUsers(data.users || {});
                     lsSet(LS_CUSTOM_CH, data.custom_chapters || []);
                     lsSet(LS_CUSTOM_Q, data.custom_questions || {});
+                    lsSet(LS_CH_LOCKS, data.chapter_locks || {});
                 }
 
                 await pullResultsFromFirebase();
@@ -698,6 +701,7 @@
                 <button onclick="switchAdminTab('topics')" data-tab="topics" class="admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg"><i class="fa-solid fa-book"></i> Chủ đề</button>
                 <button onclick="switchAdminTab('questions')" data-tab="questions" class="admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg"><i class="fa-solid fa-circle-question"></i> Câu hỏi</button>
                 <button onclick="switchAdminTab('grades')" data-tab="grades" class="admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg"><i class="fa-solid fa-chart-column"></i> Bảng điểm</button>
+                <button onclick="switchAdminTab('locks')" data-tab="locks" class="admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg"><i class="fa-solid fa-lock"></i> Khóa chương</button>
             </div>
 
             <!-- TAB 1: TÀI KHOẢN -->
@@ -792,6 +796,9 @@
                 </div>
                 <div class="flex flex-wrap items-center gap-3">
                     <button onclick="refreshGradesFromCloud()" class="btn-hover-scale px-5 py-2.5 rounded-xl bg-indigo-500 text-white font-black text-sm shadow"><i class="fa-solid fa-rotate"></i> TẢI LẠI TỪ ĐÁM MÂY</button>
+                    <button onclick="exportGradesByChapterExcel()" class="btn-hover-scale px-5 py-2.5 rounded-xl bg-emerald-600 text-white font-black text-sm shadow"><i class="fa-solid fa-file-excel"></i> XUẤT EXCEL THEO CHƯƠNG</button>
+                    <button onclick="exportGradesByChapterCsvZip()" class="btn-hover-scale px-5 py-2.5 rounded-xl bg-teal-600 text-white font-black text-sm shadow"><i class="fa-solid fa-file-csv"></i> XUẤT CSV TỪNG CHƯƠNG</button>
+                    <a href="https://drive.google.com/drive/my-drive" target="_blank" rel="noopener" class="btn-hover-scale inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 text-white font-black text-sm shadow"><i class="fa-brands fa-google-drive"></i> MỞ GOOGLE DRIVE</a>
                     <span id="adm-grade-cloud-note" class="text-sm font-bold text-slate-500 dark:text-slate-400"></span>
                 </div>
                 <div id="adm-grade-summary" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
@@ -814,9 +821,35 @@
                 </div>
                 <p class="text-xs text-slate-400 font-semibold">Lưu ý: Bảng này hiển thị kết quả các bài làm trên trình duyệt hiện tại. Với học sinh làm bài trên máy riêng, điểm tổng hợp sẽ về qua Google Form của cô, hoặc học sinh gửi "Mã kết quả" để cô nhập ở thẻ Tài khoản.</p>
             </div>
+
+            <!-- ================== THẺ: KHÓA CHƯƠNG BẰNG MẬT KHẨU ================== -->
+            <div id="admin-tab-locks" class="admin-tab-content hidden space-y-6">
+                <h3 class="text-xl font-extrabold text-slate-800 dark:text-slate-100"><i class="fa-solid fa-lock text-amber-500"></i> Đặt mật khẩu cho từng chương</h3>
+                <div class="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/20 border-2 border-amber-200 dark:border-amber-900">
+                    <p class="text-sm font-semibold text-amber-700 dark:text-amber-400">Chương có mật khẩu sẽ bị khóa với học sinh: muốn vào học phải nhập đúng mật khẩu cô cấp. Tài khoản Giáo viên luôn vào được. Học sinh chỉ cần nhập một lần cho mỗi phiên đăng nhập. Để mở khóa lại, bấm "Gỡ khóa".</p>
+                </div>
+                <div id="adm-locks-list" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
+            </div>
         </section>
 
     </main>
+
+    <!-- Hộp thoại nhập mật khẩu chương -->
+    <div id="modal-chapter-pass" class="fixed inset-0 z-[110] overflow-y-auto hidden flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm">
+        <div class="bg-white dark:bg-slate-900 rounded-[24px] max-w-md w-full p-8 shadow-2xl border-4 border-amber-500 space-y-5 text-center">
+            <div class="w-16 h-16 mx-auto rounded-full bg-amber-100 dark:bg-amber-950 flex items-center justify-center text-3xl text-amber-500">
+                <i class="fa-solid fa-lock"></i>
+            </div>
+            <h3 class="text-2xl font-black text-slate-800 dark:text-white" id="chpass-title">Chương đang khóa</h3>
+            <p class="text-base text-slate-500 dark:text-slate-400 font-bold" id="chpass-hint">Hãy nhập mật khẩu cô giáo đã cấp cho chương này.</p>
+            <input type="password" id="chpass-input" autocomplete="off" placeholder="Nhập mật khẩu chương..." class="w-full p-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-bold text-lg text-center focus:border-amber-500 focus:outline-none dark:text-white">
+            <p id="chpass-error" class="hidden text-red-500 font-bold text-sm"></p>
+            <div class="flex gap-3 justify-center pt-1">
+                <button id="chpass-submit" class="px-7 py-3 bg-amber-500 text-white font-extrabold text-lg rounded-xl btn-hover-scale"><i class="fa-solid fa-key"></i> Mở chương</button>
+                <button onclick="closeChapterPassModal()" class="px-6 py-3 bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 font-extrabold text-lg rounded-xl btn-hover-scale">Quay lại</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Hộp thoại cảnh báo và thiết lập -->
     <div id="modal-custom-dialog" class="fixed inset-0 z-[100] overflow-y-auto hidden flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm">
@@ -1751,6 +1784,7 @@
         const LS_RESULTS = 'math8_results';
         const LS_CUSTOM_CH = 'math8_custom_chapters';
         const LS_CUSTOM_Q = 'math8_custom_questions';
+        const LS_CH_LOCKS = 'math8_chapter_locks';   // Mật khẩu khoá từng chương (do Giáo viên đặt)
 
         function lsGet(key, fallback) {
             try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch (e) { return fallback; }
@@ -1863,6 +1897,7 @@
         function handleLogout() {
             playSynthSound('click');
             localStorage.removeItem(LS_SESSION);
+            sessionStorage.removeItem('math8_unlocked_chapters'); // khóa lại các chương đã mở
             location.reload();
         }
 
@@ -1906,7 +1941,8 @@
                 kind: 'math8_class',
                 users: getUsers(),
                 customChapters: lsGet(LS_CUSTOM_CH, []),
-                customQuestions: lsGet(LS_CUSTOM_Q, {})
+                customQuestions: lsGet(LS_CUSTOM_Q, {}),
+                chapterLocks: lsGet(LS_CH_LOCKS, {})
             };
             const code = b64Encode(JSON.stringify(payload));
             const area = document.getElementById('adm-code-area');
@@ -1929,6 +1965,7 @@
                 setUsers(users);
                 if (payload.customChapters) lsSet(LS_CUSTOM_CH, payload.customChapters);
                 if (payload.customQuestions) lsSet(LS_CUSTOM_Q, payload.customQuestions);
+                if (payload.chapterLocks) lsSet(LS_CH_LOCKS, payload.chapterLocks);
                 document.getElementById('import-class-code').value = '';
                 document.getElementById('login-import-box').classList.add('hidden');
                 showCustomAlert('Thành công 🎉', 'Đã nhập Mã lớp học! Bây giờ bạn có thể đăng nhập bằng tài khoản cô giáo đã cấp.');
@@ -2040,6 +2077,7 @@
             if (tab === 'topics') renderAdminTopics();
             if (tab === 'questions') { populateAdminChapterSelect(); renderAdminQuestionTypeFields(); renderAdminQuestions(); }
             if (tab === 'grades') { renderAdminGrades(); refreshGradesFromCloud(); }
+            if (tab === 'locks') renderAdminChapterLocks();
         }
 
         /* ---------- TAB TÀI KHOẢN ---------- */
@@ -2309,6 +2347,264 @@
                     ? '<i class="fa-solid fa-circle-check text-emerald-500"></i> Đã tải kết quả mới nhất của cả lớp lúc ' + new Date().toLocaleTimeString('vi-VN')
                     : '<i class="fa-solid fa-triangle-exclamation text-red-500"></i> KHÔNG tải được từ đám mây: ' + fbErrText(FB.lastError);
             }
+        }
+
+
+        /* ===================================================================
+           KHÓA CHƯƠNG BẰNG MẬT KHẨU (Giáo viên đặt cho từng chương)
+           =================================================================== */
+        function getChapterLocks() { return lsGet(LS_CH_LOCKS, {}); }
+        function setChapterLocks(o) { lsSet(LS_CH_LOCKS, o); }
+        function chapterLockOf(id) { const l = getChapterLocks()[String(id)]; return (l && l.hash) ? l : null; }
+
+        function unlockedChapters() {
+            try { return JSON.parse(sessionStorage.getItem('math8_unlocked_chapters')) || []; } catch (e) { return []; }
+        }
+        function markChapterUnlocked(id) {
+            const arr = unlockedChapters();
+            if (!arr.includes(id)) arr.push(id);
+            sessionStorage.setItem('math8_unlocked_chapters', JSON.stringify(arr));
+        }
+        function chapterAccessAllowed(id) {
+            if (isAdmin()) return true;
+            if (!chapterLockOf(id)) return true;
+            return unlockedChapters().includes(id);
+        }
+
+        /* Hộp thoại nhập mật khẩu chương */
+        function askChapterPassword(id) {
+            const ch = CHAPTERS_LIST.find(c => c.id === id);
+            const lock = chapterLockOf(id);
+            if (!lock) return;
+            playSynthSound('click');
+            const modal = document.getElementById('modal-chapter-pass');
+            document.getElementById('chpass-title').innerText = (ch ? ch.code + ' — ' + ch.name : 'Chương này') + ' đang khóa';
+            document.getElementById('chpass-hint').innerText = lock.hint ? ('Gợi ý của cô: ' + lock.hint) : 'Hãy nhập mật khẩu cô giáo đã cấp cho chương này.';
+            const inp = document.getElementById('chpass-input');
+            const err = document.getElementById('chpass-error');
+            inp.value = ''; err.classList.add('hidden');
+            modal.classList.remove('hidden');
+            setTimeout(() => inp.focus(), 80);
+            inp.onkeydown = function (e) { if (e.key === 'Enter') submitChapterPassword(id); };
+            document.getElementById('chpass-submit').onclick = function () { submitChapterPassword(id); };
+        }
+        function closeChapterPassModal() {
+            document.getElementById('modal-chapter-pass').classList.add('hidden');
+        }
+        async function submitChapterPassword(id) {
+            const inp = document.getElementById('chpass-input');
+            const err = document.getElementById('chpass-error');
+            const lock = chapterLockOf(id);
+            if (!lock) { closeChapterPassModal(); return; }
+            const val = inp.value.trim();
+            if (!val) { err.innerText = 'Bạn chưa nhập mật khẩu.'; err.classList.remove('hidden'); return; }
+            const h = await hashPass(val);
+            if (h === lock.hash) {
+                markChapterUnlocked(id);
+                closeChapterPassModal();
+                playSynthSound('correct');
+                renderChapters();
+                selectChapter(id);
+            } else {
+                err.innerText = 'Sai mật khẩu chương. Hãy hỏi lại cô giáo nhé!';
+                err.classList.remove('hidden');
+                inp.value = '';
+                inp.focus();
+            }
+        }
+
+        /* --- Giao diện quản trị: đặt / gỡ mật khẩu từng chương --- */
+        function renderAdminChapterLocks() {
+            const box = document.getElementById('adm-locks-list');
+            if (!box) return;
+            const locks = getChapterLocks();
+            box.innerHTML = '';
+            CHAPTERS_LIST.forEach(ch => {
+                const lock = locks[String(ch.id)];
+                const on = !!(lock && lock.hash);
+                const div = document.createElement('div');
+                div.className = 'p-5 rounded-2xl border-2 ' + (on
+                    ? 'border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/20'
+                    : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40');
+                div.innerHTML =
+                    '<div class="flex items-center justify-between gap-3 mb-3">' +
+                        '<div class="flex items-center gap-3">' +
+                            '<div class="w-11 h-11 rounded-xl bg-brand-100 dark:bg-brand-950/40 flex items-center justify-center text-brand-600"><i class="fa-solid ' + ch.icon + '"></i></div>' +
+                            '<div><p class="text-xs font-black uppercase tracking-widest text-slate-400">' + escapeHtml(ch.code) + '</p>' +
+                            '<p class="font-extrabold text-slate-800 dark:text-slate-100 leading-tight">' + escapeHtml(ch.name) + '</p></div>' +
+                        '</div>' +
+                        '<span class="shrink-0 px-3 py-1 rounded-full text-xs font-black ' + (on ? 'bg-amber-500 text-white' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300') + '">' +
+                            (on ? '<i class="fa-solid fa-lock"></i> ĐANG KHÓA' : '<i class="fa-solid fa-lock-open"></i> MỞ') + '</span>' +
+                    '</div>' +
+                    '<div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">' +
+                        '<input type="text" id="lockpass-' + ch.id + '" placeholder="' + (on ? 'Nhập mật khẩu mới để đổi...' : 'Đặt mật khẩu cho chương...') + '" class="p-3 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold dark:text-white focus:border-amber-500 focus:outline-none">' +
+                        '<input type="text" id="lockhint-' + ch.id + '" value="' + escapeHtml((lock && lock.hint) || '') + '" placeholder="Gợi ý cho học sinh (tùy chọn)" class="p-3 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold dark:text-white focus:border-amber-500 focus:outline-none">' +
+                    '</div>' +
+                    '<div class="flex flex-wrap gap-2">' +
+                        '<button onclick="adminSetChapterPassword(' + ch.id + ')" class="btn-hover-scale px-4 py-2.5 rounded-xl bg-amber-500 text-white font-black text-sm shadow"><i class="fa-solid fa-key"></i> ' + (on ? 'ĐỔI MẬT KHẨU' : 'ĐẶT MẬT KHẨU') + '</button>' +
+                        (on ? '<button onclick="adminClearChapterPassword(' + ch.id + ')" class="btn-hover-scale px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-black text-sm"><i class="fa-solid fa-lock-open"></i> GỠ KHÓA</button>' : '') +
+                    '</div>';
+                box.appendChild(div);
+            });
+        }
+
+        async function adminSetChapterPassword(id) {
+            if (!isAdmin()) return;
+            const pass = document.getElementById('lockpass-' + id).value.trim();
+            const hint = document.getElementById('lockhint-' + id).value.trim();
+            const locks = getChapterLocks();
+            const existing = locks[String(id)];
+
+            if (!pass && existing && existing.hash) {
+                existing.hint = hint;
+                locks[String(id)] = existing;
+                setChapterLocks(locks);
+                renderAdminChapterLocks();
+                pushDataToFirebase();
+                showCustomAlert('Đã lưu gợi ý ✅', 'Mật khẩu giữ nguyên, chỉ cập nhật gợi ý cho học sinh.');
+                return;
+            }
+            if (pass.length < 3) { showCustomAlert('Chú ý', 'Mật khẩu chương cần ít nhất 3 ký tự.'); return; }
+
+            locks[String(id)] = { hash: await hashPass(pass), hint: hint, updatedAt: new Date().toISOString() };
+            setChapterLocks(locks);
+            renderAdminChapterLocks();
+            renderChapters();
+            pushDataToFirebase();
+            const ch = CHAPTERS_LIST.find(c => c.id === id);
+            showCustomAlert('Đã khóa chương 🔒', 'Từ giờ học sinh muốn vào "' + (ch ? ch.name : ('Chương ' + id)) + '" phải nhập mật khẩu: ' + pass + '\n\nHãy gửi mật khẩu này cho lớp khi cô muốn mở bài.');
+        }
+
+        function adminClearChapterPassword(id) {
+            if (!isAdmin()) return;
+            showCustomConfirm('Gỡ khóa chương?', 'Sau khi gỡ, mọi học sinh đều vào học chương này mà không cần mật khẩu.', function () {
+                const locks = getChapterLocks();
+                delete locks[String(id)];
+                setChapterLocks(locks);
+                renderAdminChapterLocks();
+                renderChapters();
+                pushDataToFirebase();
+                showCustomAlert('Đã gỡ khóa 🔓', 'Chương này đã mở tự do cho cả lớp.');
+            });
+        }
+
+        /* ===================================================================
+           XUẤT ĐIỂM RA FILE — CHIA THEO CHƯƠNG (mỗi chương một sheet / một file)
+           Cô tải file về rồi tải lên Google Drive của mình.
+           =================================================================== */
+        function gradeRowsByChapter() {
+            const results = lsGet(LS_RESULTS, []);
+            const users = getUsers();
+            const groups = {};   // tên chương -> mảng dòng
+
+            results.forEach(r => {
+                let chId = r.chapterId;
+                let ch = CHAPTERS_LIST.find(c => c.id === chId);
+                if (!ch && r.chapterName) ch = CHAPTERS_LIST.find(c => c.name === r.chapterName);
+                const chCode = ch ? ch.code : (r.chapterName ? '' : 'Khác');
+                const chName = ch ? ch.name : (r.chapterName || 'Không rõ chương');
+                const key = (chCode ? chCode + ' - ' : '') + chName;
+                const acc = r.total > 0 ? Math.round((r.correct / r.total) * 100) : 0;
+                let rank = 'Chưa đạt';
+                if (acc >= 90) rank = 'Xuất sắc'; else if (acc >= 80) rank = 'Tốt';
+                else if (acc >= 65) rank = 'Khá'; else if (acc >= 50) rank = 'Đạt';
+
+                if (!groups[key]) groups[key] = [];
+                groups[key].push({
+                    'Họ và tên': (r.fullName || (users[r.username] && users[r.username].fullName) || r.username || ''),
+                    'Tên đăng nhập': r.username || '',
+                    'Lớp': r.className || (users[r.username] && users[r.username].className) || '',
+                    'Chương': chName,
+                    'Vòng': r.round || '',
+                    'Điểm': r.score || 0,
+                    'Số câu đúng': r.correct || 0,
+                    'Tổng số câu': r.total || 0,
+                    'Độ chính xác (%)': acc,
+                    'Xếp loại': rank,
+                    'Thời gian làm (giây)': r.timeSpent || 0,
+                    'Ngày giờ nộp': r.dateTime || ''
+                });
+            });
+
+            Object.keys(groups).forEach(k => {
+                groups[k].sort((a, b) =>
+                    String(a['Họ và tên']).localeCompare(String(b['Họ và tên']), 'vi') ||
+                    (a['Vòng'] - b['Vòng']));
+            });
+            return groups;
+        }
+
+        function safeSheetName(name) {
+            // Excel: tối đa 31 ký tự, không chứa : \ / ? * [ ]
+            return String(name).replace(/[:\\\/\?\*\[\]]/g, ' ').slice(0, 31).trim() || 'Chuong';
+        }
+
+        function exportGradesByChapterExcel() {
+            if (typeof XLSX === 'undefined') {
+                showCustomAlert('Thiếu thư viện', 'Trình duyệt chưa tải được thư viện tạo file Excel (có thể do mạng chặn). Cô hãy dùng nút "XUẤT CSV TỪNG CHƯƠNG" thay thế nhé.');
+                return;
+            }
+            const groups = gradeRowsByChapter();
+            const keys = Object.keys(groups).sort();
+            if (keys.length === 0) {
+                showCustomAlert('Chưa có dữ liệu', 'Chưa có kết quả làm bài nào để xuất. Hãy bấm "TẢI LẠI TỪ ĐÁM MÂY" trước nhé.');
+                return;
+            }
+
+            const wb = XLSX.utils.book_new();
+
+            // Sheet tổng quan: mỗi chương một dòng
+            const overview = keys.map(k => {
+                const rows = groups[k];
+                const students = [...new Set(rows.map(r => r['Họ và tên']))];
+                const avg = Math.round(rows.reduce((a, r) => a + (r['Điểm'] || 0), 0) / rows.length);
+                return {
+                    'Chương': k,
+                    'Số học sinh đã làm': students.length,
+                    'Số lượt làm bài': rows.length,
+                    'Điểm trung bình': avg,
+                    'Điểm cao nhất': Math.max.apply(null, rows.map(r => r['Điểm'] || 0))
+                };
+            });
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(overview), 'TỔNG QUAN');
+
+            keys.forEach(k => {
+                const ws = XLSX.utils.json_to_sheet(groups[k]);
+                ws['!cols'] = [{ wch: 26 }, { wch: 16 }, { wch: 10 }, { wch: 28 }, { wch: 7 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 20 }];
+                XLSX.utils.book_append_sheet(wb, ws, safeSheetName(k));
+            });
+
+            const stamp = new Date().toISOString().slice(0, 10);
+            XLSX.writeFile(wb, 'BangDiem_Toan8_TheoChuong_' + stamp + '.xlsx');
+            showCustomAlert('Đã xuất file 📁', 'File Excel đã được tải về máy: mỗi chương là MỘT SHEET riêng, bên trong liệt kê họ tên từng học sinh và điểm.\n\nCô mở drive.google.com và kéo thả file này vào Drive để lưu trữ, hoặc mở bằng Google Trang tính.');
+        }
+
+        function downloadTextFile(filename, text) {
+            const blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1500);
+        }
+
+        function exportGradesByChapterCsvZip() {
+            const groups = gradeRowsByChapter();
+            const keys = Object.keys(groups).sort();
+            if (keys.length === 0) {
+                showCustomAlert('Chưa có dữ liệu', 'Chưa có kết quả làm bài nào để xuất. Hãy bấm "TẢI LẠI TỪ ĐÁM MÂY" trước nhé.');
+                return;
+            }
+            keys.forEach((k, i) => {
+                const rows = groups[k];
+                const cols = Object.keys(rows[0]);
+                const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+                const csv = [cols.map(esc).join(',')].concat(rows.map(r => cols.map(c => esc(r[c])).join(','))).join('\r\n');
+                const fname = 'Diem_' + k.replace(/[^0-9A-Za-zÀ-ỹ ]/g, '').replace(/\s+/g, '_') + '.csv';
+                setTimeout(() => downloadTextFile(fname, csv), i * 350);
+            });
+            showCustomAlert('Đang tải ' + keys.length + ' file 📁', 'Mỗi chương là một file CSV riêng, bên trong có họ tên và điểm của từng học sinh.\n\nSau khi tải xong, cô kéo thả các file này vào một thư mục trên Google Drive.');
         }
 
         function renderAdminGrades() {
@@ -2635,6 +2931,7 @@
             let scoresData = JSON.parse(localStorage.getItem(scoresKey())) || {};
 
             CHAPTERS_LIST.forEach((ch) => {
+                const chLocked = !!chapterLockOf(ch.id) && !chapterAccessAllowed(ch.id);
                 let totalHighscore = 0;
                 let completedRounds = 0;
                 for (let r = 1; r <= 3; r++) {
@@ -2654,7 +2951,7 @@
                     <div class="absolute bottom-0 left-0 h-2 bg-brand-500 transition-all duration-300" style="width: ${progressPct}%"></div>
                     <div class="space-y-4">
                         <div class="flex justify-between items-center">
-                            <span class="text-xs font-black uppercase tracking-widest text-slate-400 group-hover:text-brand-500 transition-colors">${ch.code}</span>
+                            <span class="text-xs font-black uppercase tracking-widest text-slate-400 group-hover:text-brand-500 transition-colors">${ch.code} ${chLocked ? '<i class="fa-solid fa-lock text-amber-500 ml-1"></i>' : ''}</span>
                             <span class="text-sm font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 px-3 py-1 rounded-full">${progressPct}% Đạt</span>
                         </div>
                         <div class="flex items-start gap-4">
@@ -2669,7 +2966,7 @@
                     </div>
                     <div class="flex justify-between items-center pt-4 border-t-2 border-slate-100 dark:border-slate-850 mt-4 text-base font-bold text-slate-500">
                         <span>Kỷ lục: <strong class="text-brand-600 dark:text-brand-400">${totalHighscore}đ</strong></span>
-                        <span class="text-brand-600 dark:text-brand-400 group-hover:translate-x-1 transition-transform font-black">Vào học <i class="fa-solid fa-arrow-right"></i></span>
+                        <span class="${chLocked ? 'text-amber-600 dark:text-amber-400' : 'text-brand-600 dark:text-brand-400'} group-hover:translate-x-1 transition-transform font-black">${chLocked ? 'Cần mật khẩu <i class="fa-solid fa-key"></i>' : 'Vào học <i class="fa-solid fa-arrow-right"></i>'}</span>
                     </div>
                 `;
                 container.appendChild(card);
@@ -2677,6 +2974,8 @@
         }
 
         function selectChapter(id) {
+            // Chương bị Giáo viên khóa: yêu cầu nhập mật khẩu chương trước khi vào học
+            if (!chapterAccessAllowed(id)) { askChapterPassword(id); return; }
             playSynthSound('click');
             gameState.currentChapterId = id;
             const chapter = CHAPTERS_LIST.find(c => c.id === id);
