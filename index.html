@@ -116,6 +116,7 @@
                         custom_chapters: lsGet(LS_CUSTOM_CH, []),
                         custom_questions: lsGet(LS_CUSTOM_Q, {}),
                         chapter_locks: lsGet(LS_CH_LOCKS, {}),
+                        drive_webapp: lsGet(LS_DRIVE_URL, ''),
                         updatedAt: new Date().toISOString()
                     });
                 }
@@ -212,6 +213,7 @@
                     lsSet(LS_CUSTOM_CH, data.custom_chapters || []);
                     lsSet(LS_CUSTOM_Q, data.custom_questions || {});
                     lsSet(LS_CH_LOCKS, data.chapter_locks || {});
+                    lsSet(LS_DRIVE_URL, data.drive_webapp || '');
                 }
 
                 await pullResultsFromFirebase();
@@ -702,6 +704,7 @@
                 <button onclick="switchAdminTab('questions')" data-tab="questions" class="admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg"><i class="fa-solid fa-circle-question"></i> Câu hỏi</button>
                 <button onclick="switchAdminTab('grades')" data-tab="grades" class="admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg"><i class="fa-solid fa-chart-column"></i> Bảng điểm</button>
                 <button onclick="switchAdminTab('locks')" data-tab="locks" class="admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg"><i class="fa-solid fa-lock"></i> Khóa chương</button>
+                <button onclick="switchAdminTab('drive')" data-tab="drive" class="admin-tab-btn btn-hover-scale px-5 py-3 rounded-xl font-black text-lg"><i class="fa-brands fa-google-drive"></i> Google Drive</button>
             </div>
 
             <!-- TAB 1: TÀI KHOẢN -->
@@ -829,6 +832,36 @@
                     <p class="text-sm font-semibold text-amber-700 dark:text-amber-400">Chương có mật khẩu sẽ bị khóa với học sinh: muốn vào học phải nhập đúng mật khẩu cô cấp. Tài khoản Giáo viên luôn vào được. Học sinh chỉ cần nhập một lần cho mỗi phiên đăng nhập. Để mở khóa lại, bấm "Gỡ khóa".</p>
                 </div>
                 <div id="adm-locks-list" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
+            </div>
+
+            <!-- ================== THẺ: TỰ ĐỘNG GHI ĐIỂM LÊN GOOGLE DRIVE ================== -->
+            <div id="admin-tab-drive" class="admin-tab-content hidden space-y-6">
+                <h3 class="text-xl font-extrabold text-slate-800 dark:text-slate-100"><i class="fa-brands fa-google-drive text-emerald-500"></i> Tự động ghi điểm vào Google Drive</h3>
+                <div class="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/20 border-2 border-emerald-200 dark:border-emerald-900">
+                    <p class="text-sm font-semibold text-emerald-800 dark:text-emerald-300">Khi đã bật, MỖI LẦN học sinh làm xong một vòng, điểm sẽ tự bay lên file bảng điểm trong Drive của cô — mỗi chương một trang tính riêng. Cô không phải bấm gì thêm.</p>
+                    <p class="text-sm font-semibold text-emerald-800 dark:text-emerald-300 mt-2">Cần làm 1 lần duy nhất: mở file <strong>HUONG-DAN-KET-NOI-DRIVE.html</strong> và làm theo 6 bước, rồi dán đường link nhận được vào ô dưới đây.</p>
+                </div>
+
+                <div class="space-y-3">
+                    <label class="block text-sm font-black text-slate-500 dark:text-slate-300 uppercase tracking-wider">Đường link ứng dụng web (Web App URL)</label>
+                    <input type="text" id="adm-drive-url" placeholder="https://script.google.com/macros/s/...../exec" class="w-full p-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold dark:text-white focus:border-emerald-500 focus:outline-none">
+                    <div class="flex flex-wrap gap-3">
+                        <button onclick="adminSaveDriveUrl()" class="btn-hover-scale px-6 py-3 rounded-xl bg-emerald-600 text-white font-black shadow-lg"><i class="fa-solid fa-floppy-disk"></i> LƯU VÀ BẬT</button>
+                        <button onclick="testDriveConnection()" class="btn-hover-scale px-6 py-3 rounded-xl bg-indigo-500 text-white font-black shadow-lg"><i class="fa-solid fa-stethoscope"></i> KIỂM TRA KẾT NỐI</button>
+                        <button onclick="adminClearDriveUrl()" class="btn-hover-scale px-6 py-3 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-black"><i class="fa-solid fa-power-off"></i> TẮT</button>
+                    </div>
+                    <p id="adm-drive-status" class="text-sm font-bold text-slate-500 dark:text-slate-400"></p>
+                </div>
+
+                <div class="p-5 rounded-2xl border-2 border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 space-y-3">
+                    <h4 class="font-extrabold text-slate-700 dark:text-slate-200"><i class="fa-solid fa-paper-plane text-amber-500"></i> Gửi bù các lượt cũ</h4>
+                    <p class="text-sm font-semibold text-slate-500 dark:text-slate-400">Các lượt làm bài đã có sẵn trong Bảng điểm (kể cả trước khi bật Drive) có thể được đẩy lên Drive một lần. Hệ thống tự bỏ qua những lượt đã ghi rồi nên không sợ trùng.</p>
+                    <div class="flex flex-wrap gap-3">
+                        <button onclick="uploadAllResultsToDrive()" class="btn-hover-scale px-6 py-3 rounded-xl bg-amber-500 text-white font-black shadow-lg"><i class="fa-solid fa-cloud-arrow-up"></i> ĐẨY TOÀN BỘ ĐIỂM LÊN DRIVE</button>
+                        <button onclick="flushDriveQueue(true)" class="btn-hover-scale px-6 py-3 rounded-xl bg-slate-500 text-white font-black shadow"><i class="fa-solid fa-rotate"></i> GỬI LẠI CÁC LƯỢT LỖI (<span id="adm-drive-queue-count">0</span>)</button>
+                    </div>
+                    <p id="adm-drive-upload-note" class="text-sm font-bold text-slate-500 dark:text-slate-400"></p>
+                </div>
             </div>
         </section>
 
@@ -1784,7 +1817,9 @@
         const LS_RESULTS = 'math8_results';
         const LS_CUSTOM_CH = 'math8_custom_chapters';
         const LS_CUSTOM_Q = 'math8_custom_questions';
-        const LS_CH_LOCKS = 'math8_chapter_locks';   // Mật khẩu khoá từng chương (do Giáo viên đặt)
+        const LS_CH_LOCKS = 'math8_chapter_locks';
+        const LS_DRIVE_URL = 'math8_drive_webapp';   // URL Google Apps Script ghi điểm vào Drive
+        const LS_DRIVE_QUEUE = 'math8_drive_queue';  // Hàng đợi các lượt chưa gửi được lên Drive   // Mật khẩu khoá từng chương (do Giáo viên đặt)
 
         function lsGet(key, fallback) {
             try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch (e) { return fallback; }
@@ -1902,6 +1937,7 @@
         }
 
         function enterApp() {
+            setTimeout(() => { try { flushDriveQueue(false); } catch (e) {} }, 2500); // gửi bù các lượt còn tồn lên Drive
             document.getElementById('screen-login').classList.add('hidden');
             document.getElementById('screen-admin').classList.add('hidden');
             document.getElementById('screen-home').classList.remove('hidden');
@@ -1942,7 +1978,8 @@
                 users: getUsers(),
                 customChapters: lsGet(LS_CUSTOM_CH, []),
                 customQuestions: lsGet(LS_CUSTOM_Q, {}),
-                chapterLocks: lsGet(LS_CH_LOCKS, {})
+                chapterLocks: lsGet(LS_CH_LOCKS, {}),
+                driveWebapp: lsGet(LS_DRIVE_URL, '')
             };
             const code = b64Encode(JSON.stringify(payload));
             const area = document.getElementById('adm-code-area');
@@ -1966,6 +2003,7 @@
                 if (payload.customChapters) lsSet(LS_CUSTOM_CH, payload.customChapters);
                 if (payload.customQuestions) lsSet(LS_CUSTOM_Q, payload.customQuestions);
                 if (payload.chapterLocks) lsSet(LS_CH_LOCKS, payload.chapterLocks);
+                if (payload.driveWebapp) lsSet(LS_DRIVE_URL, payload.driveWebapp);
                 document.getElementById('import-class-code').value = '';
                 document.getElementById('login-import-box').classList.add('hidden');
                 showCustomAlert('Thành công 🎉', 'Đã nhập Mã lớp học! Bây giờ bạn có thể đăng nhập bằng tài khoản cô giáo đã cấp.');
@@ -2078,6 +2116,7 @@
             if (tab === 'questions') { populateAdminChapterSelect(); renderAdminQuestionTypeFields(); renderAdminQuestions(); }
             if (tab === 'grades') { renderAdminGrades(); refreshGradesFromCloud(); }
             if (tab === 'locks') renderAdminChapterLocks();
+            if (tab === 'drive') renderAdminDrive();
         }
 
         /* ---------- TAB TÀI KHOẢN ---------- */
@@ -2607,6 +2646,148 @@
             showCustomAlert('Đang tải ' + keys.length + ' file 📁', 'Mỗi chương là một file CSV riêng, bên trong có họ tên và điểm của từng học sinh.\n\nSau khi tải xong, cô kéo thả các file này vào một thư mục trên Google Drive.');
         }
 
+
+        /* ===================================================================
+           TỰ ĐỘNG GHI ĐIỂM LÊN GOOGLE DRIVE (qua Google Apps Script)
+           Mỗi lượt làm bài của học sinh -> một dòng trong trang tính của chương.
+           =================================================================== */
+        function driveUrl() { return (lsGet(LS_DRIVE_URL, '') || '').trim(); }
+        function driveEnabled() { return /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(driveUrl()); }
+        function driveQueue() { return lsGet(LS_DRIVE_QUEUE, []); }
+        function setDriveQueue(q) { lsSet(LS_DRIVE_QUEUE, q); }
+
+        /* Gửi một mảng bản ghi lên Drive. Trả về true nếu máy chủ xác nhận đã ghi. */
+        async function sendRecordsToDrive(records) {
+            if (!driveEnabled() || !records || records.length === 0) return false;
+            try {
+                const res = await fetch(driveUrl(), {
+                    method: 'POST',
+                    // text/plain để tránh yêu cầu preflight (CORS) của trình duyệt
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ records: records })
+                });
+                const data = await res.json();
+                return !!data.ok;
+            } catch (e) {
+                console.warn('[Drive] Gửi thất bại:', e);
+                return false;
+            }
+        }
+
+        /* Gọi ngay sau khi học sinh hoàn thành một vòng */
+        async function pushResultToDrive(record) {
+            if (!driveEnabled()) return;
+            const ok = await sendRecordsToDrive([record]);
+            if (!ok) {
+                const q = driveQueue();
+                if (!q.some(r => r.stamp === record.stamp)) q.push(record);
+                setDriveQueue(q);
+                console.warn('[Drive] Đã lưu tạm lượt làm bài, sẽ gửi lại sau.');
+            }
+        }
+
+        /* Gửi lại những lượt trước đó chưa gửi được (gọi khi vào app / khi bấm nút) */
+        async function flushDriveQueue(showMsg) {
+            const q = driveQueue();
+            const cnt = document.getElementById('adm-drive-queue-count');
+            if (cnt) cnt.innerText = q.length;
+            if (!driveEnabled() || q.length === 0) {
+                if (showMsg) showCustomAlert('Không có gì để gửi', driveEnabled() ? 'Tất cả các lượt làm bài đều đã lên Drive.' : 'Cô chưa bật kết nối Drive.');
+                return;
+            }
+            const ok = await sendRecordsToDrive(q);
+            if (ok) {
+                setDriveQueue([]);
+                if (cnt) cnt.innerText = 0;
+                if (showMsg) showCustomAlert('Đã gửi xong ✅', 'Đã đẩy ' + q.length + ' lượt làm bài còn tồn lên Google Drive.');
+            } else if (showMsg) {
+                showCustomAlert('Chưa gửi được ❌', 'Vẫn không kết nối được tới Drive. Cô kiểm tra lại đường link ở nút "KIỂM TRA KẾT NỐI" nhé.');
+            }
+        }
+
+        /* --- Giao diện quản trị --- */
+        function renderAdminDrive() {
+            const inp = document.getElementById('adm-drive-url');
+            const st = document.getElementById('adm-drive-status');
+            const cnt = document.getElementById('adm-drive-queue-count');
+            if (inp) inp.value = driveUrl();
+            if (cnt) cnt.innerText = driveQueue().length;
+            if (st) {
+                st.innerHTML = driveEnabled()
+                    ? '<i class="fa-solid fa-circle-check text-emerald-500"></i> ĐANG BẬT — điểm của học sinh tự động ghi vào Drive sau mỗi vòng chơi.'
+                    : '<i class="fa-solid fa-circle-xmark text-slate-400"></i> ĐANG TẮT — điểm chỉ lưu trên Firebase, cô phải tự xuất file Excel.';
+            }
+        }
+
+        function adminSaveDriveUrl() {
+            if (!isAdmin()) return;
+            const url = document.getElementById('adm-drive-url').value.trim();
+            if (url && !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(url)) {
+                showCustomAlert('Link chưa đúng', 'Đường link phải có dạng:\nhttps://script.google.com/macros/s/..../exec\n\nCô nhớ copy link ở bước "Triển khai" (Deploy) và phải kết thúc bằng /exec nhé.');
+                return;
+            }
+            lsSet(LS_DRIVE_URL, url);
+            renderAdminDrive();
+            pushDataToFirebase();
+            showCustomAlert('Đã lưu ✅', url ? 'Đã bật ghi điểm tự động lên Google Drive. Cô bấm "KIỂM TRA KẾT NỐI" để chắc chắn mọi thứ chạy tốt.' : 'Đã tắt ghi điểm lên Drive.');
+        }
+
+        function adminClearDriveUrl() {
+            if (!isAdmin()) return;
+            showCustomConfirm('Tắt ghi điểm lên Drive?', 'Sau khi tắt, điểm học sinh sẽ không tự động lên Drive nữa.', function () {
+                lsSet(LS_DRIVE_URL, '');
+                document.getElementById('adm-drive-url').value = '';
+                renderAdminDrive();
+                pushDataToFirebase();
+                showCustomAlert('Đã tắt', 'Ghi điểm tự động lên Drive đã được tắt.');
+            });
+        }
+
+        async function testDriveConnection() {
+            const url = document.getElementById('adm-drive-url').value.trim() || driveUrl();
+            const st = document.getElementById('adm-drive-status');
+            if (!url) { showCustomAlert('Chưa có link', 'Cô hãy dán đường link ứng dụng web vào ô trên trước nhé.'); return; }
+            if (st) st.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-indigo-500"></i> Đang kiểm tra kết nối tới Google Drive...';
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data.ok) {
+                    if (st) st.innerHTML = '<i class="fa-solid fa-circle-check text-emerald-500"></i> Kết nối TỐT — file bảng điểm: ' + escapeHtml(data.name || '') +
+                        (data.file ? ' — <a href="' + escapeHtml(data.file) + '" target="_blank" class="text-indigo-500 underline">Mở file trên Drive</a>' : '');
+                    showCustomAlert('Kết nối thành công 🎉', 'Ứng dụng đã nối được với Google Drive của cô. File bảng điểm: "' + (data.name || '') + '".\n\nTừ giờ mỗi học sinh làm xong một vòng là điểm tự động ghi vào đúng trang tính của chương đó.');
+                } else {
+                    if (st) st.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-red-500"></i> Lỗi: ' + escapeHtml(data.error || 'không rõ');
+                    showCustomAlert('Chưa kết nối được ❌', 'Máy chủ Google trả về lỗi:\n' + (data.error || 'Không rõ nguyên nhân') + '\n\nThường là do chưa dán ID thư mục vào dòng FOLDER_ID trong Code.gs.');
+                }
+            } catch (e) {
+                if (st) st.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-red-500"></i> Không gọi được tới đường link.';
+                showCustomAlert('Không kết nối được ❌', 'Không gọi được tới đường link.\n\nCô kiểm tra 3 điều:\n1. Khi Triển khai (Deploy) đã chọn "Bất kỳ ai" (Anyone) ở mục Người có quyền truy cập.\n2. Link kết thúc bằng /exec (không phải /dev).\n3. Máy đang có mạng.');
+            }
+        }
+
+        /* Đẩy toàn bộ điểm đang có lên Drive (dùng khi mới bật, hoặc để chắc ăn) */
+        async function uploadAllResultsToDrive() {
+            if (!driveEnabled()) { showCustomAlert('Chưa bật Drive', 'Cô hãy dán link và bấm "LƯU VÀ BẬT" trước nhé.'); return; }
+            const note = document.getElementById('adm-drive-upload-note');
+            const results = lsGet(LS_RESULTS, []);
+            if (results.length === 0) { showCustomAlert('Chưa có dữ liệu', 'Chưa có lượt làm bài nào. Cô bấm "TẢI LẠI TỪ ĐÁM MÂY" ở thẻ Bảng điểm trước nhé.'); return; }
+            if (note) note.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-indigo-500"></i> Đang đẩy ' + results.length + ' lượt làm bài lên Drive...';
+
+            // Gửi theo từng khối 60 bản ghi để tránh quá tải
+            let done = 0, failed = 0;
+            for (let i = 0; i < results.length; i += 60) {
+                const chunk = results.slice(i, i + 60);
+                const ok = await sendRecordsToDrive(chunk);
+                if (ok) done += chunk.length; else failed += chunk.length;
+            }
+            if (note) note.innerHTML = failed === 0
+                ? '<i class="fa-solid fa-circle-check text-emerald-500"></i> Đã đẩy xong ' + done + ' lượt làm bài lên Drive lúc ' + new Date().toLocaleTimeString('vi-VN')
+                : '<i class="fa-solid fa-triangle-exclamation text-amber-500"></i> Đẩy được ' + done + ' lượt, còn ' + failed + ' lượt lỗi.';
+            showCustomAlert(failed === 0 ? 'Hoàn tất 🎉' : 'Xong (có lỗi)',
+                'Đã ghi ' + done + ' lượt làm bài vào Google Drive' + (failed ? ', ' + failed + ' lượt chưa gửi được.' : '.') +
+                '\n\nCác lượt đã ghi trước đó sẽ tự được bỏ qua nên bảng điểm không bị trùng.');
+        }
+
         function renderAdminGrades() {
             const results = lsGet(LS_RESULTS, []);
             const users = getUsers();
@@ -2892,6 +3073,7 @@
 
             pushDataToFirebase();     // điểm & huy hiệu cá nhân của học sinh
             pushResultRecord(record); // lượt làm bài -> bảng điểm Giáo viên (dùng push, KHÔNG ghi đè cả mảng)
+            pushResultToDrive(record); // TỰ ĐỘNG ghi ngay vào Google Drive của cô (theo chương)
         }
 
         function confirmResetUserData() {
